@@ -1,0 +1,20 @@
+# Keil MDK build artifacts
+MDK-ARM/LSM6DSR_F407_TEST/
+MDK-ARM/DebugConfig/
+MDK-ARM/RTE/
+*.axf
+*.hex
+*.htm
+*.sct
+*.scvd
+*.crf
+*.d
+*.o
+*.dep
+
+# Build logs
+*.log
+
+# IDE/OS
+.DS_Store
+Thumbs.db
