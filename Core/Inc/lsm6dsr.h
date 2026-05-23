@@ -3,7 +3,13 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "stm32f4xx_hal.h"
+
+/* Platform I/O abstraction */
+typedef struct {
+    int8_t (*read)(void *ctx, uint8_t reg, uint8_t *buf, uint16_t len);
+    int8_t (*write)(void *ctx, uint8_t reg, const uint8_t *buf, uint16_t len);
+    void *ctx;
+} lsm6dsr_io_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,6 +27,7 @@ extern "C" {
 #define LSM6DSR_REG_CTRL2_G         0x11
 #define LSM6DSR_REG_CTRL3_C         0x12
 #define LSM6DSR_REG_CTRL4_C         0x13
+#define LSM6DSR_REG_CTRL5_C         0x14
 #define LSM6DSR_REG_CTRL6_C         0x15
 #define LSM6DSR_REG_CTRL7_G         0x16
 #define LSM6DSR_REG_CTRL8_XL        0x17
@@ -150,52 +157,73 @@ typedef struct {
 #define FIFO_TAG_GYRO  0
 #define FIFO_TAG_ACC   1
 
-lsm6dsr_status_t lsm6dsr_write_reg(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t val);
-lsm6dsr_status_t lsm6dsr_read_reg(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t *val);
-lsm6dsr_status_t lsm6dsr_read_multi(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t *data, uint16_t len);
-lsm6dsr_status_t lsm6dsr_read_multi_bytewise(I2C_HandleTypeDef *hi2c, uint8_t reg, uint8_t *data, uint16_t len);
+/* Self-test modes */
+#define LSM6DSR_XL_ST_DISABLE   0
+#define LSM6DSR_XL_ST_POSITIVE  1
+#define LSM6DSR_XL_ST_NEGATIVE  2
 
-lsm6dsr_status_t lsm6dsr_verify_id(I2C_HandleTypeDef *hi2c);
-lsm6dsr_status_t lsm6dsr_reset(I2C_HandleTypeDef *hi2c);
-lsm6dsr_status_t lsm6dsr_boot(I2C_HandleTypeDef *hi2c);
-lsm6dsr_status_t lsm6dsr_i3c_disable(I2C_HandleTypeDef *hi2c);
+#define LSM6DSR_GY_ST_DISABLE   0
+#define LSM6DSR_GY_ST_POSITIVE  1
+#define LSM6DSR_GY_ST_NEGATIVE  3
 
-lsm6dsr_status_t lsm6dsr_accel_config(I2C_HandleTypeDef *hi2c, lsm6dsr_accel_odr_t odr, lsm6dsr_accel_fs_t fs);
-lsm6dsr_status_t lsm6dsr_read_accel_raw(I2C_HandleTypeDef *hi2c, lsm6dsr_axis_t *accel);
-lsm6dsr_status_t lsm6dsr_read_accel_float(I2C_HandleTypeDef *hi2c, float *ax, float *ay, float *az, lsm6dsr_accel_fs_t fs);
+/* Power mode control */
+#define CTRL6_C_XL_HM_MODE  (1<<4)
+#define CTRL7_G_GY_HM_MODE  (1<<7)
 
-lsm6dsr_status_t lsm6dsr_gyro_config(I2C_HandleTypeDef *hi2c, lsm6dsr_gyro_odr_t odr, lsm6dsr_gyro_fs_t fs);
-lsm6dsr_status_t lsm6dsr_read_gyro_raw(I2C_HandleTypeDef *hi2c, lsm6dsr_axis_t *gyro);
-lsm6dsr_status_t lsm6dsr_read_gyro_float(I2C_HandleTypeDef *hi2c, float *wx, float *wy, float *wz, lsm6dsr_gyro_fs_t fs);
+lsm6dsr_status_t lsm6dsr_write_reg(lsm6dsr_io_t *io, uint8_t reg, uint8_t val);
+lsm6dsr_status_t lsm6dsr_read_reg(lsm6dsr_io_t *io, uint8_t reg, uint8_t *val);
+lsm6dsr_status_t lsm6dsr_read_multi(lsm6dsr_io_t *io, uint8_t reg, uint8_t *data, uint16_t len);
+lsm6dsr_status_t lsm6dsr_read_multi_bytewise(lsm6dsr_io_t *io, uint8_t reg, uint8_t *data, uint16_t len);
 
-lsm6dsr_status_t lsm6dsr_read_temp(I2C_HandleTypeDef *hi2c, float *temp_celsius);
+lsm6dsr_status_t lsm6dsr_verify_id(lsm6dsr_io_t *io);
+lsm6dsr_status_t lsm6dsr_reset(lsm6dsr_io_t *io);
+lsm6dsr_status_t lsm6dsr_boot(lsm6dsr_io_t *io);
+lsm6dsr_status_t lsm6dsr_i3c_disable(lsm6dsr_io_t *io);
 
-lsm6dsr_status_t lsm6dsr_fifo_init(I2C_HandleTypeDef *hi2c, uint16_t threshold, uint8_t bdr_xl, uint8_t bdr_gy);
-lsm6dsr_status_t lsm6dsr_fifo_set_mode(I2C_HandleTypeDef *hi2c, uint8_t mode);
-lsm6dsr_status_t lsm6dsr_fifo_read_tag_data(I2C_HandleTypeDef *hi2c, uint8_t *tag, uint8_t *data);
-uint16_t lsm6dsr_fifo_get_level(I2C_HandleTypeDef *hi2c);
+lsm6dsr_status_t lsm6dsr_accel_config(lsm6dsr_io_t *io, lsm6dsr_accel_odr_t odr, lsm6dsr_accel_fs_t fs);
+lsm6dsr_status_t lsm6dsr_read_accel_raw(lsm6dsr_io_t *io, lsm6dsr_axis_t *accel);
+lsm6dsr_status_t lsm6dsr_read_accel_float(lsm6dsr_io_t *io, float *ax, float *ay, float *az, lsm6dsr_accel_fs_t fs);
 
-lsm6dsr_status_t lsm6dsr_get_drdy(I2C_HandleTypeDef *hi2c, uint8_t *accel_drdy, uint8_t *gyro_drdy);
+lsm6dsr_status_t lsm6dsr_gyro_config(lsm6dsr_io_t *io, lsm6dsr_gyro_odr_t odr, lsm6dsr_gyro_fs_t fs);
+lsm6dsr_status_t lsm6dsr_read_gyro_raw(lsm6dsr_io_t *io, lsm6dsr_axis_t *gyro);
+lsm6dsr_status_t lsm6dsr_read_gyro_float(lsm6dsr_io_t *io, float *wx, float *wy, float *wz, lsm6dsr_gyro_fs_t fs);
+
+lsm6dsr_status_t lsm6dsr_read_temp(lsm6dsr_io_t *io, float *temp_celsius);
+
+lsm6dsr_status_t lsm6dsr_fifo_init(lsm6dsr_io_t *io, uint16_t threshold, uint8_t bdr_xl, uint8_t bdr_gy);
+lsm6dsr_status_t lsm6dsr_fifo_set_mode(lsm6dsr_io_t *io, uint8_t mode);
+lsm6dsr_status_t lsm6dsr_fifo_read_tag_data(lsm6dsr_io_t *io, uint8_t *tag, uint8_t *data);
+uint16_t lsm6dsr_fifo_get_level(lsm6dsr_io_t *io);
+
+lsm6dsr_status_t lsm6dsr_get_drdy(lsm6dsr_io_t *io, uint8_t *accel_drdy, uint8_t *gyro_drdy);
 
 /* FIFO status flags */
-uint8_t lsm6dsr_fifo_wtm_flag(I2C_HandleTypeDef *hi2c);
-uint8_t lsm6dsr_fifo_ovr_flag(I2C_HandleTypeDef *hi2c);
-uint8_t lsm6dsr_fifo_full_flag(I2C_HandleTypeDef *hi2c);
-lsm6dsr_status_t lsm6dsr_fifo_flush(I2C_HandleTypeDef *hi2c);
-lsm6dsr_status_t lsm6dsr_fifo_set_wtm(I2C_HandleTypeDef *hi2c, uint16_t threshold);
+uint8_t lsm6dsr_fifo_wtm_flag(lsm6dsr_io_t *io);
+uint8_t lsm6dsr_fifo_ovr_flag(lsm6dsr_io_t *io);
+uint8_t lsm6dsr_fifo_full_flag(lsm6dsr_io_t *io);
+lsm6dsr_status_t lsm6dsr_fifo_flush(lsm6dsr_io_t *io);
+lsm6dsr_status_t lsm6dsr_fifo_set_wtm(lsm6dsr_io_t *io, uint16_t threshold);
 
 /* Independent BDU / IF_INC control */
-lsm6dsr_status_t lsm6dsr_set_bdu(I2C_HandleTypeDef *hi2c, uint8_t enable);
-lsm6dsr_status_t lsm6dsr_set_if_inc(I2C_HandleTypeDef *hi2c, uint8_t enable);
+lsm6dsr_status_t lsm6dsr_set_bdu(lsm6dsr_io_t *io, uint8_t enable);
+lsm6dsr_status_t lsm6dsr_set_if_inc(lsm6dsr_io_t *io, uint8_t enable);
 
 /* FIFO entry read with sensor type */
 typedef enum {
     LSM6DSR_FIFO_SENSOR_GYRO = 1,
     LSM6DSR_FIFO_SENSOR_ACC  = 2
 } lsm6dsr_fifo_sensor_t;
-lsm6dsr_status_t lsm6dsr_read_fifo_entry(I2C_HandleTypeDef *hi2c,
+lsm6dsr_status_t lsm6dsr_read_fifo_entry(lsm6dsr_io_t *io,
                                           lsm6dsr_fifo_sensor_t *sensor,
                                           lsm6dsr_axis_t *data);
+
+/* Self-test */
+lsm6dsr_status_t lsm6dsr_xl_self_test(lsm6dsr_io_t *io, uint8_t mode);
+lsm6dsr_status_t lsm6dsr_gy_self_test(lsm6dsr_io_t *io, uint8_t mode);
+
+/* Power mode */
+lsm6dsr_status_t lsm6dsr_xl_set_hm_mode(lsm6dsr_io_t *io, uint8_t enable);
+lsm6dsr_status_t lsm6dsr_gy_set_hm_mode(lsm6dsr_io_t *io, uint8_t enable);
 
 #ifdef __cplusplus
 }
