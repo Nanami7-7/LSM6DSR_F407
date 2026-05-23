@@ -1,9 +1,17 @@
 #include "test_lsm6dsr.h"
 #include "i2c.h"
+#include "usart.h"
 #include <stdlib.h>
+#include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 int g_pass = 0;
 int g_fail = 0;
+
+static char vofa_buf[128];
+volatile uint8_t vofa_tx_busy = 0;
 
 /* Platform I/O Adapters */
 static int8_t stm32_i2c_read(void *ctx, uint8_t reg, uint8_t *buf, uint16_t len)
@@ -136,6 +144,12 @@ void phase4(lsm6dsr_io_t *io)
         }
     } else {
         FAIL("ACC burst read failed (status=%d)", st);
+    }
+
+    float fax, fay, faz;
+    st = lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
+    if (st == LSM6DSR_OK) {
+        printf("  ACC float: %.2f %.2f %.2f g\r\n", fax, fay, faz);
     }
 
     lsm6dsr_axis_t gyro;
@@ -486,6 +500,35 @@ void phase9_fifo_all_modes(lsm6dsr_io_t *io)
         lsm6dsr_axis_t d;
         lsm6dsr_read_fifo_entry(io, &s, &d);
     }
+
+    /* High-ODR FIFO verification */
+    lsm6dsr_fifo_init(io, 50, LSM6DSR_BDR_833Hz, LSM6DSR_BDR_833Hz);
+    lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_833HZ, LSM6DSR_ACCEL_FS_4G);
+    lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_833HZ, LSM6DSR_GYRO_FS_250DPS);
+    lsm6dsr_fifo_set_mode(io, FIFO_MODE_CONT);
+    HAL_Delay(500);
+    lev = lsm6dsr_fifo_get_level(io);
+    printf("  High-ODR 833Hz CONT 0.5s: level=%u\r\n", lev);
+
+    int ha_acc = 0, ha_gyro = 0;
+    int max_t = (lev > 80) ? 80 : lev;
+    for (int i = 0; i < max_t; i++) {
+        lsm6dsr_fifo_sensor_t s;
+        lsm6dsr_axis_t d;
+        if (lsm6dsr_read_fifo_entry(io, &s, &d) != LSM6DSR_OK) break;
+        if (s == LSM6DSR_FIFO_SENSOR_ACC) ha_acc++;
+        else ha_gyro++;
+    }
+    printf("  High-ODR tags: %d ACC + %d GYRO\r\n", ha_acc, ha_gyro);
+    if (ha_acc > 0 && ha_gyro > 0) PASS("High-ODR FIFO tag OK");
+    else FAIL("High-ODR FIFO tag: ACC=%d GYRO=%d", ha_acc, ha_gyro);
+
+    lsm6dsr_fifo_set_mode(io, FIFO_MODE_BYPASS);
+    while (lsm6dsr_fifo_get_level(io) > 0) {
+        lsm6dsr_fifo_sensor_t s;
+        lsm6dsr_axis_t d;
+        lsm6dsr_read_fifo_entry(io, &s, &d);
+    }
 }
 
 void phase10_bdu_stress(lsm6dsr_io_t *io)
@@ -631,6 +674,7 @@ void phase14_data_integrity(lsm6dsr_io_t *io)
     HAL_Delay(10);
 
     lsm6dsr_axis_t acc_samples[50];
+    int n_acc = 0;
     for (int i = 0; i < 50; i++) {
         uint8_t a, g;
         uint32_t tmo = 200;
@@ -640,10 +684,11 @@ void phase14_data_integrity(lsm6dsr_io_t *io)
         } while (tmo--);
         if (!a) { FAIL("ACC DRDY timeout @%d", i); break; }
         lsm6dsr_read_accel_raw(io, &acc_samples[i]);
+        n_acc++;
     }
 
     int acc_spike = 0, acc_range_ok = 1;
-    for (int i = 1; i < 50; i++) {
+    for (int i = 1; i < n_acc; i++) {
         int dx = abs((int)acc_samples[i].x - (int)acc_samples[i-1].x);
         int dy = abs((int)acc_samples[i].y - (int)acc_samples[i-1].y);
         int dz = abs((int)acc_samples[i].z - (int)acc_samples[i-1].z);
@@ -665,6 +710,7 @@ void phase14_data_integrity(lsm6dsr_io_t *io)
     HAL_Delay(10);
 
     lsm6dsr_axis_t gy_samples[50];
+    int n_gy = 0;
     for (int i = 0; i < 50; i++) {
         uint8_t a, g;
         uint32_t tmo = 200;
@@ -674,10 +720,11 @@ void phase14_data_integrity(lsm6dsr_io_t *io)
         } while (tmo--);
         if (!g) { FAIL("GYRO DRDY timeout @%d", i); break; }
         lsm6dsr_read_gyro_raw(io, &gy_samples[i]);
+        n_gy++;
     }
 
     int gy_spike = 0;
-    for (int i = 1; i < 50; i++) {
+    for (int i = 1; i < n_gy; i++) {
         int dx = abs((int)gy_samples[i].x - (int)gy_samples[i-1].x);
         int dy = abs((int)gy_samples[i].y - (int)gy_samples[i-1].y);
         int dz = abs((int)gy_samples[i].z - (int)gy_samples[i-1].z);
@@ -746,6 +793,146 @@ void phase15_reg_after_reset(lsm6dsr_io_t *io)
     if (reset_ok && write_ok && boot_ok) PASS("Reset/Boot register integrity OK");
 }
 
+void phase16_bias_noise(lsm6dsr_io_t *io)
+{
+    const int N = 200;
+    int all_ok = 1;
+
+    /* ---- ACC ---- */
+    lsm6dsr_set_if_inc(io, 1);
+    lsm6dsr_set_bdu(io, 1);
+    lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
+    HAL_Delay(50);
+
+    double ax_sum = 0, ay_sum = 0, az_sum = 0;
+    double ax_sq = 0, ay_sq = 0, az_sq = 0;
+
+    for (int i = 0; i < N; i++) {
+        uint8_t a, g;
+        uint32_t tmo = 200;
+        do { lsm6dsr_get_drdy(io, &a, &g); } while (!a && tmo--);
+        float x, y, z;
+        lsm6dsr_read_accel_float(io, &x, &y, &z, LSM6DSR_ACCEL_FS_4G);
+        ax_sum += x; ay_sum += y; az_sum += z;
+        ax_sq += x*x; ay_sq += y*y; az_sq += z*z;
+    }
+
+    double ax_mg = ax_sum / N;
+    double ay_mg = ay_sum / N;
+    double az_mg = az_sum / N;
+
+    double ax_std = sqrt(ax_sq/N - (ax_sum/N)*(ax_sum/N));
+    double ay_std = sqrt(ay_sq/N - (ay_sum/N)*(ay_sum/N));
+    double az_std = sqrt(az_sq/N - (az_sum/N)*(az_sum/N));
+
+    printf("  ACC @104Hz/4G (N=%d):\r\n", N);
+    printf("    X: mean=%7.2f mg  std=%5.2f mg\r\n", ax_mg, ax_std);
+    printf("    Y: mean=%7.2f mg  std=%5.2f mg\r\n", ay_mg, ay_std);
+    printf("    Z: mean=%7.2f mg  std=%5.2f mg\r\n", az_mg, az_std);
+    printf("    Mag: %.2f g\r\n", sqrt(ax_mg*ax_mg + ay_mg*ay_mg + az_mg*az_mg) / 1000.0);
+
+    if (ax_std < 20 && ay_std < 20 && az_std < 20) PASS("ACC noise: all axes std < 20 mg");
+    else { FAIL("ACC noise: std exceeds 20 mg"); all_ok = 0; }
+
+    /* ---- GYRO ---- */
+    lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
+    HAL_Delay(50);
+
+    double gx_sum = 0, gy_sum = 0, gz_sum = 0;
+    double gx_sq = 0, gy_sq = 0, gz_sq = 0;
+
+    for (int i = 0; i < N; i++) {
+        uint8_t a, g;
+        uint32_t tmo = 200;
+        do { lsm6dsr_get_drdy(io, &a, &g); } while (!g && tmo--);
+        float x, y, z;
+        lsm6dsr_read_gyro_float(io, &x, &y, &z, LSM6DSR_GYRO_FS_250DPS);
+        gx_sum += x; gy_sum += y; gz_sum += z;
+        gx_sq += x*x; gy_sq += y*y; gz_sq += z*z;
+    }
+
+    double gx_dps = gx_sum / N;
+    double gy_dps = gy_sum / N;
+    double gz_dps = gz_sum / N;
+
+    double gx_std = sqrt(gx_sq/N - (gx_sum/N)*(gx_sum/N));
+    double gy_std = sqrt(gy_sq/N - (gy_sum/N)*(gy_sum/N));
+    double gz_std = sqrt(gz_sq/N - (gz_sum/N)*(gz_sum/N));
+
+    printf("  GYRO @104Hz/250dps (N=%d):\r\n", N);
+    printf("    X: mean=%7.3f dps  std=%6.4f dps\r\n", gx_dps, gx_std);
+    printf("    Y: mean=%7.3f dps  std=%6.4f dps\r\n", gy_dps, gy_std);
+    printf("    Z: mean=%7.3f dps  std=%6.4f dps\r\n", gz_dps, gz_std);
+
+    if (gx_std < 0.5 && gy_std < 0.5 && gz_std < 0.5) PASS("GYRO noise: all axes std < 0.5 dps");
+    else { FAIL("GYRO noise: std exceeds 0.5 dps"); all_ok = 0; }
+
+    if (all_ok) PASS("Bias & noise floor measurement OK");
+}
+
+void phase17_live_display(lsm6dsr_io_t *io)
+{
+    float ax, ay, az, gx, gy, gz;
+
+    lsm6dsr_set_if_inc(io, 1);
+    lsm6dsr_set_bdu(io, 1);
+    lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
+    lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
+    HAL_Delay(50);
+
+    lsm6dsr_read_accel_float(io, &ax, &ay, &az, LSM6DSR_ACCEL_FS_4G);
+    lsm6dsr_read_gyro_float(io, &gx, &gy, &gz, LSM6DSR_GYRO_FS_250DPS);
+
+    double pitch = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / M_PI;
+    double roll  = atan2( ay, sqrt(ax*ax + az*az)) * 180.0 / M_PI;
+    double yaw   = 0.0;
+
+    const double alpha = 0.95;
+    uint32_t last_tick = HAL_GetTick();
+
+    printf("\r\n--- VOFA+ Live Data (9ch: ax,ay,az,gx,gy,gz,pitch,roll,yaw) ---\r\n");
+
+    while (1) {
+        uint32_t now = HAL_GetTick();
+        double dt = (now > last_tick) ? (now - last_tick) * 0.001 : 0.01;
+        if (dt > 0.5) dt = 0.01;
+        last_tick = now;
+
+        uint8_t a, g;
+        uint32_t tmo = 200;
+        do { lsm6dsr_get_drdy(io, &a, &g); } while ((!a || !g) && tmo--);
+
+        float fax, fay, faz, fgx, fgy, fgz;
+        lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
+        lsm6dsr_read_gyro_float(io, &fgx, &fgy, &fgz, LSM6DSR_GYRO_FS_250DPS);
+
+        double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
+        double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
+
+        pitch = alpha * (pitch + fgy * dt) + (1.0 - alpha) * acc_pitch;
+        roll  = alpha * (roll  - fgx * dt) + (1.0 - alpha) * acc_roll;
+        yaw  += fgz * dt;
+
+        float ax_ms2 = fax * 0.00980665f;
+        float ay_ms2 = fay * 0.00980665f;
+        float az_ms2 = faz * 0.00980665f;
+
+        while (vofa_tx_busy) { /* spin */ }
+
+        int len = sprintf(vofa_buf,
+            "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f\r\n",
+            (double)ax_ms2, (double)ay_ms2, (double)az_ms2,
+            (double)fgx, (double)fgy, (double)fgz,
+            pitch, roll, yaw);
+
+        if (HAL_UART_Transmit_IT(&huart1, (uint8_t *)vofa_buf, len) == HAL_OK) {
+            vofa_tx_busy = 1;
+        }
+
+        HAL_Delay(90);
+    }
+}
+
 void run_all_tests(void)
 {
     g_pass = 0;
@@ -754,9 +941,9 @@ void run_all_tests(void)
     printf("\r\n========================================\r\n");
     printf("  LSM6DSR I2C & Register Core Test\r\n");
     printf("========================================\r\n");
-    printf("  I2C1: DevAddr=0x%04X, Clock=%luHz, APB1=%luHz\r\n",
+    printf("  I2C1: DevAddr=0x%04X, Clock=%luHz, APB1=%uHz\r\n",
            (unsigned)LSM6DSR_I2C_ADDR, (unsigned long)hi2c1.Init.ClockSpeed,
-           HAL_RCC_GetPCLK1Freq());
+           (unsigned)HAL_RCC_GetPCLK1Freq());
     HAL_Delay(200);
 
     PHASE(1, "I2C Bus Probe");
@@ -808,6 +995,9 @@ void run_all_tests(void)
 
     PHASE(15, "Reg read-back after reset/boot");
     phase15_reg_after_reset(&lsm6dsr_io);
+
+    PHASE(16, "Zero-rate bias & noise floor");
+    phase16_bias_noise(&lsm6dsr_io);
 #endif
 
     printf("\r\n========================================\r\n");

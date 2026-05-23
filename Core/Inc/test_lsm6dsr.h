@@ -16,6 +16,7 @@ extern "C" {
 extern int g_pass;
 extern int g_fail;
 extern lsm6dsr_io_t lsm6dsr_io;
+extern volatile uint8_t vofa_tx_busy;
 
 void run_all_tests(void);
 void phase1(void);
@@ -33,6 +34,8 @@ void phase12_init_stability(lsm6dsr_io_t *io);
 void phase13_drdy_poll(lsm6dsr_io_t *io);
 void phase14_data_integrity(lsm6dsr_io_t *io);
 void phase15_reg_after_reset(lsm6dsr_io_t *io);
+void phase16_bias_noise(lsm6dsr_io_t *io);
+void phase17_live_display(lsm6dsr_io_t *io);
 
 #ifdef __cplusplus
 }

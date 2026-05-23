@@ -8,6 +8,13 @@ void SystemClock_Config(void);
 
 int fputc(int ch, FILE *f) { uint8_t c = ch; HAL_UART_Transmit(&huart1, &c, 1, 100); return ch; }
 
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1) {
+        vofa_tx_busy = 0;
+    }
+}
+
 int main(void)
 {
     HAL_Init();
@@ -17,6 +24,8 @@ int main(void)
     MX_USART1_UART_Init();
 
     run_all_tests();
+
+    phase17_live_display(&lsm6dsr_io);
 
     while (1) { ; }
 }
