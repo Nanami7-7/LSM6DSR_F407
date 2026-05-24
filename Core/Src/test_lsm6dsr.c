@@ -914,6 +914,23 @@ void phase17_live_display(lsm6dsr_io_t *io)
         lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
         lsm6dsr_read_gyro_float(io, &fgx, &fgy, &fgz, LSM6DSR_GYRO_FS_250DPS);
 
+        { /* Periodic raw debug dump */
+            static int dbg_cnt = 0;
+            if (++dbg_cnt >= 100) {
+                dbg_cnt = 0;
+                uint8_t status, c2g, raw[6];
+                lsm6dsr_read_reg(io, LSM6DSR_REG_STATUS_REG, &status);
+                lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL2_G, &c2g);
+                lsm6dsr_read_multi(io, LSM6DSR_REG_OUTX_L_G, raw, 6);
+                printf("\r\nDBG: STATUS=0x%02X CTRL2_G=0x%02X"
+                       " gy_raw=%02X%02X %02X%02X %02X%02X"
+                       " (a=%d,g=%d fg=%.3f,%.3f,%.3f)\r\n",
+                       status, c2g,
+                       raw[0],raw[1], raw[2],raw[3], raw[4],raw[5],
+                       a,g, fgx,fgy,fgz);
+            }
+        }
+
         double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
         double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
 
