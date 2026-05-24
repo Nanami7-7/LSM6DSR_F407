@@ -873,12 +873,21 @@ void phase16_bias_noise(lsm6dsr_io_t *io)
 void phase17_live_display(lsm6dsr_io_t *io)
 {
     float ax, ay, az, gx, gy, gz;
+    float fax = 0, fay = 0, faz = 0, fgx = 0, fgy = 0, fgz = 0;
 
+    lsm6dsr_i3c_disable(io);
     lsm6dsr_set_if_inc(io, 1);
     lsm6dsr_set_bdu(io, 1);
     lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
     lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
     HAL_Delay(50);
+
+    {
+        uint8_t ctrl2_g, ctrl7_g;
+        lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL2_G, &ctrl2_g);
+        lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL7_G, &ctrl7_g);
+        printf("  GYRO config: CTRL2_G=0x%02X CTRL7_G=0x%02X\r\n", ctrl2_g, ctrl7_g);
+    }
 
     lsm6dsr_read_accel_float(io, &ax, &ay, &az, LSM6DSR_ACCEL_FS_4G);
     lsm6dsr_read_gyro_float(io, &gx, &gy, &gz, LSM6DSR_GYRO_FS_250DPS);
@@ -898,11 +907,10 @@ void phase17_live_display(lsm6dsr_io_t *io)
         if (dt > 0.5) dt = 0.01;
         last_tick = now;
 
-        uint8_t a, g;
-        uint32_t tmo = 200;
-        do { lsm6dsr_get_drdy(io, &a, &g); } while ((!a || !g) && tmo--);
+        /* Read DRDY for debug visibility */
+        uint8_t a = 0, g = 0;
+        lsm6dsr_get_drdy(io, &a, &g);
 
-        float fax, fay, faz, fgx, fgy, fgz;
         lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
         lsm6dsr_read_gyro_float(io, &fgx, &fgy, &fgz, LSM6DSR_GYRO_FS_250DPS);
 
