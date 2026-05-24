@@ -36,6 +36,7 @@ void phase14_data_integrity(lsm6dsr_io_t *io);
 void phase15_reg_after_reset(lsm6dsr_io_t *io);
 void phase16_bias_noise(lsm6dsr_io_t *io);
 void phase17_live_display(lsm6dsr_io_t *io);
+void phase18_bias_perf_test(lsm6dsr_io_t *io);
 
 #ifdef __cplusplus
 }

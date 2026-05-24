@@ -903,8 +903,48 @@ void phase17_live_display(lsm6dsr_io_t *io)
         printf("  GYRO config: CTRL2_G=0x%02X CTRL7_G=0x%02X\r\n", ctrl2_g, ctrl7_g);
     }
 
+    /* ---- Startup Gyro Bias Calibration ---- */
+    float bgx = 0, bgy = 0, bgz = 0;
+    int cal_ok = 0;
+    {
+        const int N_CAL = 100;
+        int n_valid = 0;
+        float pax, pay, paz;
+        lsm6dsr_read_accel_float(io, &pax, &pay, &paz, LSM6DSR_ACCEL_FS_4G);
+
+        printf("  Calibrating gyro bias (%d samples, keep still)...\r\n", N_CAL);
+        for (int i = 0; i < N_CAL; i++) {
+            float tax, tay, taz, tgx, tgy, tgz;
+            lsm6dsr_read_accel_float(io, &tax, &tay, &taz, LSM6DSR_ACCEL_FS_4G);
+            lsm6dsr_read_gyro_float(io, &tgx, &tgy, &tgz, LSM6DSR_GYRO_FS_250DPS);
+
+            float mag2 = tax*tax + tay*tay + taz*taz;
+            if (fabsf(mag2 - 1000000.0f) < 65000.0f
+                && fabsf(tax - pax) < 80.0f
+                && fabsf(tay - pay) < 80.0f
+                && fabsf(taz - paz) < 80.0f) {
+                bgx += tgx; bgy += tgy; bgz += tgz;
+                n_valid++;
+            }
+            pax = tax; pay = tay; paz = taz;
+            HAL_Delay(9);
+        }
+
+        if (n_valid >= N_CAL / 2) {
+            bgx /= n_valid; bgy /= n_valid; bgz /= n_valid;
+            cal_ok = 1;
+            printf("  Gyro bias: X=%.4f Y=%.4f Z=%.4f dps (%d/%d OK)\r\n",
+                   (double)bgx, (double)bgy, (double)bgz, n_valid, N_CAL);
+        } else {
+            bgx = bgy = bgz = 0;
+            printf("  Warning: too few stationary samples (%d/%d), bias=0\r\n", n_valid, N_CAL);
+        }
+    }
+    /* ---- End Calibration ---- */
+
     lsm6dsr_read_accel_float(io, &ax, &ay, &az, LSM6DSR_ACCEL_FS_4G);
     lsm6dsr_read_gyro_float(io, &gx, &gy, &gz, LSM6DSR_GYRO_FS_250DPS);
+    if (cal_ok) { gx -= bgx; gy -= bgy; gz -= bgz; }
 
     double pitch = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / M_PI;
     double roll  = atan2( ay, sqrt(ax*ax + az*az)) * 180.0 / M_PI;
@@ -912,6 +952,9 @@ void phase17_live_display(lsm6dsr_io_t *io)
 
     const double alpha = 0.95;
     uint32_t last_tick = HAL_GetTick();
+
+    int stationary_frames = 0;
+    float prev_ax = 0, prev_ay = 0, prev_az = 0;
 
     printf("\r\n--- VOFA+ Live Data (9ch: ax,ay,az,gx,gy,gz,pitch,roll,yaw) ---\r\n");
 
@@ -956,6 +999,30 @@ void phase17_live_display(lsm6dsr_io_t *io)
         lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
         lsm6dsr_read_gyro_float(io, &fgx, &fgy, &fgz, LSM6DSR_GYRO_FS_250DPS);
 
+        /* Bias correction + runtime tracking */
+        if (cal_ok) {
+            float mag2 = fax*fax + fay*fay + faz*faz;
+            if (fabsf(mag2 - 1000000.0f) < 65000.0f
+                && fabsf(fax - prev_ax) < 80.0f
+                && fabsf(fay - prev_ay) < 80.0f
+                && fabsf(faz - prev_az) < 80.0f) {
+                if (++stationary_frames >= 20) {
+                    float rate = 0.001f;
+                    bgx += rate * (fgx - bgx);
+                    bgy += rate * (fgy - bgy);
+                    bgz += rate * (fgz - bgz);
+                    if (bgx > 2.0f) bgx = 2.0f; if (bgx < -2.0f) bgx = -2.0f;
+                    if (bgy > 2.0f) bgy = 2.0f; if (bgy < -2.0f) bgy = -2.0f;
+                    if (bgz > 2.0f) bgz = 2.0f; if (bgz < -2.0f) bgz = -2.0f;
+                }
+            } else {
+                stationary_frames = 0;
+            }
+            prev_ax = fax; prev_ay = fay; prev_az = faz;
+
+            fgx -= bgx; fgy -= bgy; fgz -= bgz;
+        }
+
         /* Every 100 frames: STATUS + CTRL2_G check */
         {   static int cnt = 0;
             if (++cnt >= 100) {
@@ -992,6 +1059,100 @@ void phase17_live_display(lsm6dsr_io_t *io)
         }
 
         HAL_Delay(90);
+    }
+}
+
+void phase18_bias_perf_test(lsm6dsr_io_t *io)
+{
+    const int N = 200;
+
+    lsm6dsr_i3c_disable(io);
+    lsm6dsr_set_if_inc(io, 1);
+    lsm6dsr_set_bdu(io, 1);
+    lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
+    lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
+    HAL_Delay(50);
+
+    double gx_sum = 0, gy_sum = 0, gz_sum = 0;
+    double gx_sq = 0, gy_sq = 0, gz_sq = 0;
+
+    for (int i = 0; i < N; i++) {
+        float x, y, z;
+        lsm6dsr_read_gyro_float(io, &x, &y, &z, LSM6DSR_GYRO_FS_250DPS);
+        gx_sum += x; gy_sum += y; gz_sum += z;
+        gx_sq += x*x; gy_sq += y*y; gz_sq += z*z;
+        HAL_Delay(9);
+    }
+
+    double raw_mx = gx_sum/N, raw_my = gy_sum/N, raw_mz = gz_sum/N;
+    double raw_sx = sqrt(gx_sq/N - raw_mx*raw_mx);
+    double raw_sy = sqrt(gy_sq/N - raw_my*raw_my);
+    double raw_sz = sqrt(gz_sq/N - raw_mz*raw_mz);
+
+    printf("\r\n[P18] Gyro Bias Calibration Performance\r\n");
+    printf("  RAW:     X=%7.4f\u00b1%.4f  Y=%7.4f\u00b1%.4f  Z=%7.4f\u00b1%.4f dps"
+           "  (yaw drift=%.2f\u00b0/min)\r\n",
+           raw_mx, raw_sx, raw_my, raw_sy, raw_mz, raw_sz, raw_mz*60.0);
+
+    float bgx = 0, bgy = 0, bgz = 0;
+    int cal_ok = 0;
+    {
+        const int N_CAL = 100;
+        int n_valid = 0;
+        float pax, pay, paz;
+        lsm6dsr_read_accel_float(io, &pax, &pay, &paz, LSM6DSR_ACCEL_FS_4G);
+
+        for (int i = 0; i < N_CAL; i++) {
+            float tax, tay, taz, tgx, tgy, tgz;
+            lsm6dsr_read_accel_float(io, &tax, &tay, &taz, LSM6DSR_ACCEL_FS_4G);
+            lsm6dsr_read_gyro_float(io, &tgx, &tgy, &tgz, LSM6DSR_GYRO_FS_250DPS);
+            float mag2 = tax*tax + tay*tay + taz*taz;
+            if (fabsf(mag2 - 1000000.0f) < 65000.0f
+                && fabsf(tax-pax) < 80.0f
+                && fabsf(tay-pay) < 80.0f
+                && fabsf(taz-paz) < 80.0f) {
+                bgx += tgx; bgy += tgy; bgz += tgz;
+                n_valid++;
+            }
+            pax=tax; pay=tay; paz=taz;
+            HAL_Delay(9);
+        }
+        if (n_valid >= N_CAL/2) {
+            bgx /= n_valid; bgy /= n_valid; bgz /= n_valid;
+            cal_ok = 1;
+        }
+    }
+
+    gx_sum = gy_sum = gz_sum = 0;
+    gx_sq = gy_sq = gz_sq = 0;
+    for (int i = 0; i < N; i++) {
+        float x, y, z;
+        lsm6dsr_read_gyro_float(io, &x, &y, &z, LSM6DSR_GYRO_FS_250DPS);
+        x -= bgx; y -= bgy; z -= bgz;
+        gx_sum += x; gy_sum += y; gz_sum += z;
+        gx_sq += x*x; gy_sq += y*y; gz_sq += z*z;
+        HAL_Delay(9);
+    }
+
+    double cal_mx = gx_sum/N, cal_my = gy_sum/N, cal_mz = gz_sum/N;
+    double cal_sx = sqrt(gx_sq/N - cal_mx*cal_mx);
+    double cal_sy = sqrt(gy_sq/N - cal_my*cal_my);
+    double cal_sz = sqrt(gz_sq/N - cal_mz*cal_mz);
+
+    printf("  CAL:     X=%7.4f\u00b1%.4f  Y=%7.4f\u00b1%.4f  Z=%7.4f\u00b1%.4f dps"
+           "  (yaw drift=%.2f\u00b0/min)\r\n",
+           cal_mx, cal_sx, cal_my, cal_sy, cal_mz, cal_sz, cal_mz*60.0);
+
+    double impr_z = (fabs(raw_mz) > 0.0001) ? (1.0 - fabs(cal_mz/raw_mz)) * 100.0 : 0;
+    printf("  Z bias reduction: %.0f%% (%.4f \u2192 %.4f dps)\r\n", impr_z, raw_mz, cal_mz);
+    printf("  Calibration samples: %s\r\n", cal_ok ? "OK" : "FAILED (device moved)");
+
+    if (cal_ok && fabs(cal_mz) * 60.0 < 1.0) {
+        PASS("Bias OK: yaw drift %.2f\u00b0/min < 1.0\u00b0/min", cal_mz*60.0);
+    } else if (!cal_ok) {
+        FAIL("Calibration failed (%d stationary)", 0);
+    } else {
+        FAIL("Yaw drift %.2f\u00b0/min >= 1.0\u00b0/min", cal_mz*60.0);
     }
 }
 
@@ -1060,6 +1221,9 @@ void run_all_tests(void)
 
     PHASE(16, "Zero-rate bias & noise floor");
     phase16_bias_noise(&lsm6dsr_io);
+
+    PHASE(18, "Bias calibration performance");
+    phase18_bias_perf_test(&lsm6dsr_io);
 #endif
 
     printf("\r\n========================================\r\n");
