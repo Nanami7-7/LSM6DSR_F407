@@ -1,4 +1,5 @@
 #include "test_lsm6dsr.h"
+#include "bsp_lsm6dsr.h"
 #include "i2c.h"
 #include "usart.h"
 #include <stdlib.h>
@@ -886,179 +887,29 @@ void phase16_bias_noise(lsm6dsr_io_t *io)
 
 void phase17_live_display(lsm6dsr_io_t *io)
 {
-    float ax, ay, az, gx, gy, gz;
-    float fax = 0, fay = 0, faz = 0, fgx = 0, fgy = 0, fgz = 0;
+    (void)io;
 
-    lsm6dsr_i3c_disable(io);
-    lsm6dsr_set_if_inc(io, 1);
-    lsm6dsr_set_bdu(io, 1);
-    lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
-    lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
-    HAL_Delay(50);
-
-    {
-        uint8_t ctrl2_g, ctrl7_g;
-        lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL2_G, &ctrl2_g);
-        lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL7_G, &ctrl7_g);
-        printf("  GYRO config: CTRL2_G=0x%02X CTRL7_G=0x%02X\r\n", ctrl2_g, ctrl7_g);
-    }
-
-    /* ---- Startup Gyro Bias Calibration ---- */
-    float bgx = 0, bgy = 0, bgz = 0;
-    int cal_ok = 0;
-    {
-        const int N_CAL = 100;
-        int n_valid = 0;
-        float pax, pay, paz;
-        lsm6dsr_read_accel_float(io, &pax, &pay, &paz, LSM6DSR_ACCEL_FS_4G);
-
-        printf("  Calibrating gyro bias (%d samples, keep still)...\r\n", N_CAL);
-        for (int i = 0; i < N_CAL; i++) {
-            float tax, tay, taz, tgx, tgy, tgz;
-            lsm6dsr_read_accel_float(io, &tax, &tay, &taz, LSM6DSR_ACCEL_FS_4G);
-            lsm6dsr_read_gyro_float(io, &tgx, &tgy, &tgz, LSM6DSR_GYRO_FS_250DPS);
-
-            float mag2 = tax*tax + tay*tay + taz*taz;
-            if (fabsf(mag2 - 1000000.0f) < 65000.0f
-                && fabsf(tax - pax) < 80.0f
-                && fabsf(tay - pay) < 80.0f
-                && fabsf(taz - paz) < 80.0f) {
-                bgx += tgx; bgy += tgy; bgz += tgz;
-                n_valid++;
-            }
-            pax = tax; pay = tay; paz = taz;
-            HAL_Delay(9);
-        }
-
-        if (n_valid >= N_CAL / 2) {
-            bgx /= n_valid; bgy /= n_valid; bgz /= n_valid;
-            cal_ok = 1;
-            printf("  Gyro bias: X=%.4f Y=%.4f Z=%.4f dps (%d/%d OK)\r\n",
-                   (double)bgx, (double)bgy, (double)bgz, n_valid, N_CAL);
-        } else {
-            bgx = bgy = bgz = 0;
-            printf("  Warning: too few stationary samples (%d/%d), bias=0\r\n", n_valid, N_CAL);
-        }
-    }
-    /* ---- End Calibration ---- */
-
-    lsm6dsr_read_accel_float(io, &ax, &ay, &az, LSM6DSR_ACCEL_FS_4G);
-    lsm6dsr_read_gyro_float(io, &gx, &gy, &gz, LSM6DSR_GYRO_FS_250DPS);
-    if (cal_ok) { gx -= bgx; gy -= bgy; gz -= bgz; }
-
-    double pitch = atan2(-ax, sqrt(ay*ay + az*az)) * 180.0 / M_PI;
-    double roll  = atan2( ay, sqrt(ax*ax + az*az)) * 180.0 / M_PI;
-    double yaw   = 0.0;
-
-    const double alpha = 0.95;
-    uint32_t last_tick = HAL_GetTick();
-
-    int stationary_frames = 0;
-    float prev_ax = 0, prev_ay = 0, prev_az = 0;
+    bsp_lsm6dsr_init();
 
     printf("\r\n--- VOFA+ Live Data (9ch: ax,ay,az,gx,gy,gz,pitch,roll,yaw) ---\r\n");
 
+    bsp_lsm6dsr_data_t d;
     while (1) {
-        uint32_t now = HAL_GetTick();
-        double dt = (now > last_tick) ? (now - last_tick) * 0.001 : 0.01;
-        if (dt > 0.5) dt = 0.01;
-        last_tick = now;
-
-        /* Read DRDY for debug visibility */
-        uint8_t a = 0, g = 0;
-        lsm6dsr_get_drdy(io, &a, &g);
-
-        /* D1-5: Deep diagnostic — before any data consumption */
-        {   static int diag = 0;
-            if (++diag <= 5) {
-                uint8_t sr;
-                lsm6dsr_read_reg(io, LSM6DSR_REG_STATUS_REG, &sr);
-                uint8_t c3c, c6c, c7g, c10c, c9xl;
-                lsm6dsr_read_reg(io, 0x12, &c3c);
-                lsm6dsr_read_reg(io, 0x15, &c6c);
-                lsm6dsr_read_reg(io, 0x16, &c7g);
-                lsm6dsr_read_reg(io, 0x19, &c10c);
-                lsm6dsr_read_reg(io, 0x18, &c9xl);
-                uint8_t g1[6], g2[6];
-                lsm6dsr_read_multi(io, LSM6DSR_REG_OUTX_L_G, g1, 6);
-                HAL_Delay(10);
-                lsm6dsr_read_multi(io, LSM6DSR_REG_OUTX_L_G, g2, 6);
-                int same = (g1[0]==g2[0]&&g1[1]==g2[1]&&g1[2]==g2[2]&&
-                            g1[3]==g2[3]&&g1[4]==g2[4]&&g1[5]==g2[5]);
-                printf("\r\n[D%d] SR=0x%02X(xl=%d,g=%d)"
-                       " | C3C=0x%02X C6C=0x%02X C7G=0x%02X C10C=0x%02X C9XL=0x%02X"
-                       " | gy_dual=%s(%02X%02X%02X%02X%02X%02X vs %02X%02X%02X%02X%02X%02X)\r\n",
-                       diag, sr, sr&1, (sr>>1)&1,
-                       c3c, c6c, c7g, c10c, c9xl,
-                       same ? "SAME" : "DIFF",
-                       g1[0],g1[1],g1[2],g1[3],g1[4],g1[5],
-                       g2[0],g2[1],g2[2],g2[3],g2[4],g2[5]);
-            }
-        }
-
-        lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
-        lsm6dsr_read_gyro_float(io, &fgx, &fgy, &fgz, LSM6DSR_GYRO_FS_250DPS);
-
-        /* Bias correction + runtime tracking */
-        if (cal_ok) {
-            float mag2 = fax*fax + fay*fay + faz*faz;
-            if (fabsf(mag2 - 1000000.0f) < 65000.0f
-                && fabsf(fax - prev_ax) < 80.0f
-                && fabsf(fay - prev_ay) < 80.0f
-                && fabsf(faz - prev_az) < 80.0f) {
-                if (++stationary_frames >= 20) {
-                    float rate = 0.001f;
-                    bgx += rate * (fgx - bgx);
-                    bgy += rate * (fgy - bgy);
-                    bgz += rate * (fgz - bgz);
-                    if (bgx > 2.0f) bgx = 2.0f; if (bgx < -2.0f) bgx = -2.0f;
-                    if (bgy > 2.0f) bgy = 2.0f; if (bgy < -2.0f) bgy = -2.0f;
-                    if (bgz > 2.0f) bgz = 2.0f; if (bgz < -2.0f) bgz = -2.0f;
-                }
-            } else {
-                stationary_frames = 0;
-            }
-            prev_ax = fax; prev_ay = fay; prev_az = faz;
-
-            fgx -= bgx; fgy -= bgy; fgz -= bgz;
-        }
-
-        /* Every 100 frames: STATUS + CTRL2_G check */
-        {   static int cnt = 0;
-            if (++cnt >= 100) {
-                cnt = 0;
-                uint8_t sr, c2g;
-                lsm6dsr_read_reg(io, 0x1E, &sr);
-                lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL2_G, &c2g);
-                printf("  SR=0x%02X(xl=%d,g=%d) CTRL2_G=0x%02X g=%.3f,%.3f,%.3f\r\n",
-                       sr, sr&1, (sr>>1)&1, c2g, fgx, fgy, fgz);
-            }
-        }
-
-        double acc_pitch = atan2(-fax, sqrt(fay*fay + faz*faz)) * 180.0 / M_PI;
-        double acc_roll  = atan2( fay, sqrt(fax*fax + faz*faz)) * 180.0 / M_PI;
-
-        pitch = alpha * (pitch + fgy * dt) + (1.0 - alpha) * acc_pitch;
-        roll  = alpha * (roll  - fgx * dt) + (1.0 - alpha) * acc_roll;
-        yaw  += fgz * dt;
-
-        float ax_ms2 = fax * 0.00980665f;
-        float ay_ms2 = fay * 0.00980665f;
-        float az_ms2 = faz * 0.00980665f;
+        bsp_lsm6dsr_update(&d);
 
         while (vofa_tx_busy) { /* spin */ }
 
         int len = sprintf(vofa_buf,
             "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%.2f,%.2f\r\n",
-            (double)ax_ms2, (double)ay_ms2, (double)az_ms2,
-            (double)fgx, (double)fgy, (double)fgz,
-            pitch, roll, yaw);
+            (double)d.ax, (double)d.ay, (double)d.az,
+            (double)d.gx, (double)d.gy, (double)d.gz,
+            d.pitch, d.roll, d.yaw);
 
         if (HAL_UART_Transmit_IT(&huart1, (uint8_t *)vofa_buf, len) == HAL_OK) {
             vofa_tx_busy = 1;
         }
 
-        HAL_Delay(90);
+        HAL_Delay(9);
     }
 }
 

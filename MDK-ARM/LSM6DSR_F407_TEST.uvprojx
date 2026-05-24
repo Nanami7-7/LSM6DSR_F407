@@ -435,6 +435,11 @@
               <FileType>1</FileType>
               <FilePath>../Core/Src/test_lsm6dsr.c</FilePath>
             </File>
+            <File>
+              <FileName>bsp_lsm6dsr.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/bsp_lsm6dsr.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
