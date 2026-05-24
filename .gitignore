@@ -18,3 +18,9 @@ MDK-ARM/RTE/
 # IDE/OS
 .DS_Store
 Thumbs.db
+
+# Keil user settings (per-machine, per-user)
+MDK-ARM/*.uvguix*
+
+# Datasheets
+*.pdf
