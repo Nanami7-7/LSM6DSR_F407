@@ -1,10 +1,14 @@
+#include <stdio.h>
 #include "main.h"
 #include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
-#include "test_lsm6dsr.h"
+#include "bsp_lsm6dsr.h"
 
 void SystemClock_Config(void);
+
+static char vofa_buf[128];
+static volatile uint8_t vofa_tx_busy = 0;
 
 int fputc(int ch, FILE *f) { uint8_t c = ch; HAL_UART_Transmit(&huart1, &c, 1, 100); return ch; }
 
@@ -23,11 +27,23 @@ int main(void)
     MX_I2C1_Init();
     MX_USART1_UART_Init();
 
-    run_all_tests();
+    bsp_lsm6dsr_init();
 
-    phase17_live_display(&lsm6dsr_io);
+    printf("\r\n--- VOFA+ Live Data (10ch: ax,ay,az,gx,gy,gz,pitch,roll,yaw,temp) ---\r\n");
 
-    while (1) { ; }
+    while (1) {
+        bsp_lsm6dsr_data_t d;
+        bsp_lsm6dsr_update(&d);
+
+        while (vofa_tx_busy) { /* spin */ }
+
+        int len = bsp_lsm6dsr_vofa_format(vofa_buf, sizeof(vofa_buf), &d);
+        if (HAL_UART_Transmit_IT(&huart1, (uint8_t *)vofa_buf, len) == HAL_OK) {
+            vofa_tx_busy = 1;
+        }
+
+        HAL_Delay(9);
+    }
 }
 
 void SystemClock_Config(void)

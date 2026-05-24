@@ -1007,6 +1007,79 @@ void phase18_bias_perf_test(lsm6dsr_io_t *io)
     }
 }
 
+/* ------------------------------------------------------------------ */
+void phase19_attitude_perf_test(lsm6dsr_io_t *io)
+{
+    (void)io;
+
+    printf("\r\n  BSP initializing for P19...\r\n");
+    bsp_lsm6dsr_init();
+    printf("\r\n[P19] Attitude Performance Test\r\n");
+    printf("  Part A: 10-second stationary drift\r\n");
+
+    const int N = 1000;
+    bsp_lsm6dsr_data_t d;
+
+    double sum_p = 0, sum_r = 0, sum_y = 0;
+    double sum_p2 = 0, sum_r2 = 0, sum_y2 = 0;
+    double sum_gx = 0, sum_gy = 0, sum_gz = 0;
+    double yaw_start = 0;
+
+    for (int i = 0; i < N; i++) {
+        bsp_lsm6dsr_update(&d);
+
+        if (i == 0) yaw_start = d.yaw;
+
+        sum_p += d.pitch;  sum_r += d.roll;  sum_y += d.yaw;
+        sum_p2 += d.pitch*d.pitch;  sum_r2 += d.roll*d.roll;  sum_y2 += d.yaw*d.yaw;
+        sum_gx += d.gx;  sum_gy += d.gy;  sum_gz += d.gz;
+
+        if ((i % 200) == 0) {
+            float var = bsp_lsm6dsr_get_last_variance();
+            printf("  [%4d] p=%.2f r=%.2f y=%.2f  var=%.0f\r\n",
+                   i, d.pitch, d.roll, d.yaw, var);
+        }
+
+        HAL_Delay(9);
+    }
+
+    double mean_p  = sum_p / N;
+    double mean_r  = sum_r / N;
+    double mean_y  = sum_y / N;
+    double std_p   = sqrt(sum_p2/N - mean_p*mean_p);
+    double std_r   = sqrt(sum_r2/N - mean_r*mean_r);
+    double std_y   = sqrt(sum_y2/N - mean_y*mean_y);
+    double drift_yaw = (mean_y - yaw_start) * 6.0;
+
+    double mean_gx = sum_gx / N, mean_gy = sum_gy / N, mean_gz = sum_gz / N;
+
+    printf("\r\n  ==== Results (10s stationary) ====\r\n");
+    printf("  Pitch: %.3f\u00b1%.4f deg\r\n", mean_p, std_p);
+    printf("  Roll:  %.3f\u00b1%.4f deg\r\n", mean_r, std_r);
+    printf("  Yaw:   %.3f\u00b1%.4f deg  drift=%.4f deg/min\r\n",
+           mean_y, std_y, drift_yaw);
+    printf("  Gyro residual: X=%.4f Y=%.4f Z=%.4f dps\r\n",
+           mean_gx, mean_gy, mean_gz);
+
+    float bx, by, bz;
+    bsp_lsm6dsr_get_bias(&bx, &by, &bz);
+    printf("  Runtime bias: X=%.4f Y=%.4f Z=%.4f dps\r\n", bx, by, bz);
+
+    printf("\r\n  Part B: A\u2192B\u2192A manual test\r\n");
+    printf("  Switch to phase17 in main.c and observe VOFA+\r\n");
+    printf("  Procedure: stand 3s \u2192 rotate 90\u00b0 \u2192 hold 3s \u2192 return \u2192 hold 3s\r\n");
+    printf("  Expect: pitch/roll return to 0\u00b0 \u00b10.3\u00b0, yaw return to \u00b11\u00b0\r\n");
+
+    /* PASS/FAIL criteria */
+    int pass = 1;
+    if (fabs(drift_yaw) > 2.0) { FAIL("Yaw drift %.2f deg/min > 2.0", drift_yaw); pass = 0; }
+    if (std_p > 0.8)           { FAIL("Pitch std %.4f > 0.8", std_p);             pass = 0; }
+    if (std_r > 0.8)           { FAIL("Roll std %.4f > 0.8", std_r);              pass = 0; }
+    if (pass) PASS("Attitude stable  yaw=%.2f deg/min  p=%.3f r=%.3f",
+                   drift_yaw, std_p, std_r);
+    printf("\r\n  Tip: tune BSP_ACC_VAR_THRESHOLD based on printed var values\r\n");
+}
+
 void run_all_tests(void)
 {
     g_pass = 0;
@@ -1075,6 +1148,9 @@ void run_all_tests(void)
 
     PHASE(18, "Bias calibration performance");
     phase18_bias_perf_test(&lsm6dsr_io);
+
+    PHASE(19, "Attitude performance (stationary drift)");
+    phase19_attitude_perf_test(&lsm6dsr_io);
 #endif
 
     printf("\r\n========================================\r\n");
