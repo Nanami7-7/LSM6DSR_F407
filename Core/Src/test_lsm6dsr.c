@@ -618,8 +618,9 @@ void phase12_init_stability(lsm6dsr_io_t *io)
         if (z_means[i] < min_v) min_v = z_means[i];
         if (z_means[i] > max_v) max_v = z_means[i];
     }
-    float spread = (max_v - min_v) / (max_v > 0 ? max_v : 1.0f) * 100.0f;
-    if (spread < 0.0f) spread = -spread;
+    float denom = (fabsf(max_v) > fabsf(min_v)) ? fabsf(max_v) : fabsf(min_v);
+    if (denom < 1.0f) denom = 1.0f;
+    float spread = (max_v - min_v) / denom * 100.0f;
     printf("  Spread = %.1f%%\r\n", spread);
     if (spread < 5.0f) PASS("Repeat init OK (spread %.1f%%)", spread);
     else FAIL("Repeat init spread %.1f%% >= 5%%", spread);
@@ -791,6 +792,9 @@ void phase15_reg_after_reset(lsm6dsr_io_t *io)
     if (boot_ok) PASS("After boot: %d regs preserved", n);
 
     if (reset_ok && write_ok && boot_ok) PASS("Reset/Boot register integrity OK");
+
+    lsm6dsr_reset(io);
+    HAL_Delay(50);
 }
 
 void phase16_bias_noise(lsm6dsr_io_t *io)
@@ -798,7 +802,7 @@ void phase16_bias_noise(lsm6dsr_io_t *io)
     const int N = 200;
     int all_ok = 1;
 
-    /* ---- ACC ---- */
+    lsm6dsr_i3c_disable(io);
     lsm6dsr_set_if_inc(io, 1);
     lsm6dsr_set_bdu(io, 1);
     lsm6dsr_accel_config(io, LSM6DSR_ACCEL_ODR_104HZ, LSM6DSR_ACCEL_FS_4G);
@@ -807,32 +811,34 @@ void phase16_bias_noise(lsm6dsr_io_t *io)
     double ax_sum = 0, ay_sum = 0, az_sum = 0;
     double ax_sq = 0, ay_sq = 0, az_sq = 0;
 
-    for (int i = 0; i < N; i++) {
-        uint8_t a, g;
-        uint32_t tmo = 200;
-        do { lsm6dsr_get_drdy(io, &a, &g); } while (!a && tmo--);
-        float x, y, z;
-        lsm6dsr_read_accel_float(io, &x, &y, &z, LSM6DSR_ACCEL_FS_4G);
-        ax_sum += x; ay_sum += y; az_sum += z;
-        ax_sq += x*x; ay_sq += y*y; az_sq += z*z;
+    {
+        int acc_ok = 1;
+        for (int i = 0; i < N && acc_ok; i++) {
+            uint8_t a, g;
+            uint32_t tmo = 200;
+            do { lsm6dsr_get_drdy(io, &a, &g); } while (!a && tmo--);
+            if (!a) { FAIL("ACC DRDY timeout @%d", i); acc_ok = 0; all_ok = 0; break; }
+            float x, y, z;
+            lsm6dsr_read_accel_float(io, &x, &y, &z, LSM6DSR_ACCEL_FS_4G);
+            ax_sum += x; ay_sum += y; az_sum += z;
+            ax_sq += x*x; ay_sq += y*y; az_sq += z*z;
+        }
+        if (acc_ok) {
+            double ax_mg = ax_sum / N;
+            double ay_mg = ay_sum / N;
+            double az_mg = az_sum / N;
+            double ax_std = sqrt(ax_sq/N - (ax_sum/N)*(ax_sum/N));
+            double ay_std = sqrt(ay_sq/N - (ay_sum/N)*(ay_sum/N));
+            double az_std = sqrt(az_sq/N - (az_sum/N)*(az_sum/N));
+            printf("  ACC @104Hz/4G (N=%d):\r\n", N);
+            printf("    X: mean=%7.2f mg  std=%5.2f mg\r\n", ax_mg, ax_std);
+            printf("    Y: mean=%7.2f mg  std=%5.2f mg\r\n", ay_mg, ay_std);
+            printf("    Z: mean=%7.2f mg  std=%5.2f mg\r\n", az_mg, az_std);
+            printf("    Mag: %.2f g\r\n", sqrt(ax_mg*ax_mg + ay_mg*ay_mg + az_mg*az_mg) / 1000.0);
+            if (ax_std < 20 && ay_std < 20 && az_std < 20) PASS("ACC noise: all axes std < 20 mg");
+            else { FAIL("ACC noise: std exceeds 20 mg"); all_ok = 0; }
+        }
     }
-
-    double ax_mg = ax_sum / N;
-    double ay_mg = ay_sum / N;
-    double az_mg = az_sum / N;
-
-    double ax_std = sqrt(ax_sq/N - (ax_sum/N)*(ax_sum/N));
-    double ay_std = sqrt(ay_sq/N - (ay_sum/N)*(ay_sum/N));
-    double az_std = sqrt(az_sq/N - (az_sum/N)*(az_sum/N));
-
-    printf("  ACC @104Hz/4G (N=%d):\r\n", N);
-    printf("    X: mean=%7.2f mg  std=%5.2f mg\r\n", ax_mg, ax_std);
-    printf("    Y: mean=%7.2f mg  std=%5.2f mg\r\n", ay_mg, ay_std);
-    printf("    Z: mean=%7.2f mg  std=%5.2f mg\r\n", az_mg, az_std);
-    printf("    Mag: %.2f g\r\n", sqrt(ax_mg*ax_mg + ay_mg*ay_mg + az_mg*az_mg) / 1000.0);
-
-    if (ax_std < 20 && ay_std < 20 && az_std < 20) PASS("ACC noise: all axes std < 20 mg");
-    else { FAIL("ACC noise: std exceeds 20 mg"); all_ok = 0; }
 
     /* ---- GYRO ---- */
     lsm6dsr_gyro_config(io, LSM6DSR_GYRO_ODR_104HZ, LSM6DSR_GYRO_FS_250DPS);
@@ -841,31 +847,39 @@ void phase16_bias_noise(lsm6dsr_io_t *io)
     double gx_sum = 0, gy_sum = 0, gz_sum = 0;
     double gx_sq = 0, gy_sq = 0, gz_sq = 0;
 
-    for (int i = 0; i < N; i++) {
-        uint8_t a, g;
-        uint32_t tmo = 200;
-        do { lsm6dsr_get_drdy(io, &a, &g); } while (!g && tmo--);
-        float x, y, z;
-        lsm6dsr_read_gyro_float(io, &x, &y, &z, LSM6DSR_GYRO_FS_250DPS);
-        gx_sum += x; gy_sum += y; gz_sum += z;
-        gx_sq += x*x; gy_sq += y*y; gz_sq += z*z;
+    {
+        int gy_ok = 1;
+        for (int i = 0; i < N && gy_ok; i++) {
+            uint8_t a, g;
+            uint32_t tmo = 200;
+            do { lsm6dsr_get_drdy(io, &a, &g); } while (!g && tmo--);
+            if (!g) { FAIL("GYRO DRDY timeout @%d", i); gy_ok = 0; all_ok = 0; break; }
+            float x, y, z;
+            lsm6dsr_read_gyro_float(io, &x, &y, &z, LSM6DSR_GYRO_FS_250DPS);
+            gx_sum += x; gy_sum += y; gz_sum += z;
+            gx_sq += x*x; gy_sq += y*y; gz_sq += z*z;
+        }
+        if (gy_ok) {
+            double gx_dps = gx_sum / N;
+            double gy_dps = gy_sum / N;
+            double gz_dps = gz_sum / N;
+            double gx_std = sqrt(gx_sq/N - (gx_sum/N)*(gx_sum/N));
+            double gy_std = sqrt(gy_sq/N - (gy_sum/N)*(gy_sum/N));
+            double gz_std = sqrt(gz_sq/N - (gz_sum/N)*(gz_sum/N));
+            printf("  GYRO @104Hz/250dps (N=%d):\r\n", N);
+            printf("    X: mean=%7.3f dps  std=%6.4f dps\r\n", gx_dps, gx_std);
+            printf("    Y: mean=%7.3f dps  std=%6.4f dps\r\n", gy_dps, gy_std);
+            printf("    Z: mean=%7.3f dps  std=%6.4f dps\r\n", gz_dps, gz_std);
+            if (gx_std < 0.0001 && gy_std < 0.0001 && gz_std < 0.0001) {
+                FAIL("GYRO data frozen (std=%.4f,%.4f,%.4f)", gx_std, gy_std, gz_std);
+                all_ok = 0;
+            } else if (gx_std < 0.5 && gy_std < 0.5 && gz_std < 0.5) {
+                PASS("GYRO noise: all axes std < 0.5 dps");
+            } else {
+                FAIL("GYRO noise: std exceeds 0.5 dps"); all_ok = 0;
+            }
+        }
     }
-
-    double gx_dps = gx_sum / N;
-    double gy_dps = gy_sum / N;
-    double gz_dps = gz_sum / N;
-
-    double gx_std = sqrt(gx_sq/N - (gx_sum/N)*(gx_sum/N));
-    double gy_std = sqrt(gy_sq/N - (gy_sum/N)*(gy_sum/N));
-    double gz_std = sqrt(gz_sq/N - (gz_sum/N)*(gz_sum/N));
-
-    printf("  GYRO @104Hz/250dps (N=%d):\r\n", N);
-    printf("    X: mean=%7.3f dps  std=%6.4f dps\r\n", gx_dps, gx_std);
-    printf("    Y: mean=%7.3f dps  std=%6.4f dps\r\n", gy_dps, gy_std);
-    printf("    Z: mean=%7.3f dps  std=%6.4f dps\r\n", gz_dps, gz_std);
-
-    if (gx_std < 0.5 && gy_std < 0.5 && gz_std < 0.5) PASS("GYRO noise: all axes std < 0.5 dps");
-    else { FAIL("GYRO noise: std exceeds 0.5 dps"); all_ok = 0; }
 
     if (all_ok) PASS("Bias & noise floor measurement OK");
 }

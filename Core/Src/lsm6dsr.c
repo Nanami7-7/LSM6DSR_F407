@@ -67,11 +67,7 @@ lsm6dsr_status_t lsm6dsr_boot(lsm6dsr_io_t *io)
 
 lsm6dsr_status_t lsm6dsr_i3c_disable(lsm6dsr_io_t *io)
 {
-    uint8_t val;
-    lsm6dsr_status_t st = lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL9_XL, &val);
-    if (st != LSM6DSR_OK) return st;
-    val |= CTRL9_XL_I3C_DISABLE;
-    return lsm6dsr_write_reg(io, LSM6DSR_REG_CTRL9_XL, val);
+    return lsm6dsr_write_reg(io, LSM6DSR_REG_CTRL9_XL, 0xE2);
 }
 
 static float accel_sensitivity(lsm6dsr_accel_fs_t fs)
