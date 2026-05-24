@@ -911,23 +911,46 @@ void phase17_live_display(lsm6dsr_io_t *io)
         uint8_t a = 0, g = 0;
         lsm6dsr_get_drdy(io, &a, &g);
 
+        /* D1-5: Deep diagnostic — before any data consumption */
+        {   static int diag = 0;
+            if (++diag <= 5) {
+                uint8_t sr;
+                lsm6dsr_read_reg(io, LSM6DSR_REG_STATUS_REG, &sr);
+                uint8_t c3c, c6c, c7g, c10c, c9xl;
+                lsm6dsr_read_reg(io, 0x12, &c3c);
+                lsm6dsr_read_reg(io, 0x15, &c6c);
+                lsm6dsr_read_reg(io, 0x16, &c7g);
+                lsm6dsr_read_reg(io, 0x19, &c10c);
+                lsm6dsr_read_reg(io, 0x18, &c9xl);
+                uint8_t g1[6], g2[6];
+                lsm6dsr_read_multi(io, LSM6DSR_REG_OUTX_L_G, g1, 6);
+                HAL_Delay(10);
+                lsm6dsr_read_multi(io, LSM6DSR_REG_OUTX_L_G, g2, 6);
+                int same = (g1[0]==g2[0]&&g1[1]==g2[1]&&g1[2]==g2[2]&&
+                            g1[3]==g2[3]&&g1[4]==g2[4]&&g1[5]==g2[5]);
+                printf("\r\n[D%d] SR=0x%02X(xl=%d,g=%d)"
+                       " | C3C=0x%02X C6C=0x%02X C7G=0x%02X C10C=0x%02X C9XL=0x%02X"
+                       " | gy_dual=%s(%02X%02X%02X%02X%02X%02X vs %02X%02X%02X%02X%02X%02X)\r\n",
+                       diag, sr, sr&1, (sr>>1)&1,
+                       c3c, c6c, c7g, c10c, c9xl,
+                       same ? "SAME" : "DIFF",
+                       g1[0],g1[1],g1[2],g1[3],g1[4],g1[5],
+                       g2[0],g2[1],g2[2],g2[3],g2[4],g2[5]);
+            }
+        }
+
         lsm6dsr_read_accel_float(io, &fax, &fay, &faz, LSM6DSR_ACCEL_FS_4G);
         lsm6dsr_read_gyro_float(io, &fgx, &fgy, &fgz, LSM6DSR_GYRO_FS_250DPS);
 
-        { /* Periodic raw debug dump */
-            static int dbg_cnt = 0;
-            if (++dbg_cnt >= 100) {
-                dbg_cnt = 0;
-                uint8_t status, c2g, raw[6];
-                lsm6dsr_read_reg(io, LSM6DSR_REG_STATUS_REG, &status);
+        /* Every 100 frames: STATUS + CTRL2_G check */
+        {   static int cnt = 0;
+            if (++cnt >= 100) {
+                cnt = 0;
+                uint8_t sr, c2g;
+                lsm6dsr_read_reg(io, 0x1E, &sr);
                 lsm6dsr_read_reg(io, LSM6DSR_REG_CTRL2_G, &c2g);
-                lsm6dsr_read_multi(io, LSM6DSR_REG_OUTX_L_G, raw, 6);
-                printf("\r\nDBG: STATUS=0x%02X CTRL2_G=0x%02X"
-                       " gy_raw=%02X%02X %02X%02X %02X%02X"
-                       " (a=%d,g=%d fg=%.3f,%.3f,%.3f)\r\n",
-                       status, c2g,
-                       raw[0],raw[1], raw[2],raw[3], raw[4],raw[5],
-                       a,g, fgx,fgy,fgz);
+                printf("  SR=0x%02X(xl=%d,g=%d) CTRL2_G=0x%02X g=%.3f,%.3f,%.3f\r\n",
+                       sr, sr&1, (sr>>1)&1, c2g, fgx, fgy, fgz);
             }
         }
 
