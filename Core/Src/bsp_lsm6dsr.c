@@ -1,3 +1,18 @@
+/**
+ * @file    bsp_lsm6dsr.c
+ * @brief   BSP 业务层 — 互补滤波器与姿态估计算法实现
+ *
+ * 核心算法与功能:
+ *   - 互补滤波器 (Complementary Filter)：融合 ACC 低频姿态 + GYRO 积分
+ *   - 自适应 α：运动时 α=0.99 (近纯 GYRO)，静止时 α=0.30 (ACC 主导收敛)
+ *   - 三重静止检测：
+ *       1. ACC 方差滑动窗口 (抗振动干扰)
+ *       2. ACC 幅值校验 (|mag² - 1G| < tol)
+ *       3. GYRO 幅值校验 (|gyro| > threshold → 运动)
+ *   - Runtime 偏置跟踪：静止时 bg += rate × fg (X/Y vs Z 独立速率)
+ *   - DWT 周期计数器计时 (~6ns 精度，替代 HAL_GetTick 的 1ms 抖动)
+ *   - VOFA+ 格式化：10 通道 FireWater 协议
+ */
 #include "bsp_lsm6dsr.h"
 #include "lsm6dsr.h"
 #include "main.h"
@@ -9,30 +24,38 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Platform I/O — instance owned by test_lsm6dsr.c */
+/** @brief 平台 I/O 实例 (定义于 test_lsm6dsr.c) */
 extern lsm6dsr_io_t lsm6dsr_io;
 
 /* ---- Runtime state (internal) ---- */
-static float   bgx, bgy, bgz;          /* gyro bias (dps) */
-static int     cal_ok;                  /* calibration success flag */
-static double  pitch, roll, yaw;        /* filter state (deg) */
-static uint32_t last_tick;              /* last DWT CYCCNT (6ns resolution) */
-static int     initialized;             /* guard for update before init */
+static float   bgx, bgy, bgz;          /**< 陀螺偏置 (dps) */
+static int     cal_ok;                  /**< 校准成功标志 */
+static double  pitch, roll, yaw;        /**< 滤波器状态 (deg) */
+static uint32_t last_tick;              /**< 上一帧 DWT CYCCNT (~6ns 分辨率) */
+static int     initialized;             /**< init 完成守护标志 */
 
 /* ---- Adaptive filter state ---- */
-static float   ax_buf[BSP_ACC_VAR_WINDOW];
-static float   ay_buf[BSP_ACC_VAR_WINDOW];
-static float   az_buf[BSP_ACC_VAR_WINDOW];
-static int     var_buf_idx;
-static int     var_samples;
-static float   alpha;                   /* current adaptive alpha */
-static float   last_variance;           /* last computed variance (for debug) */
+static float   ax_buf[BSP_ACC_VAR_WINDOW]; /**< ACC X 滑动窗口 */
+static float   ay_buf[BSP_ACC_VAR_WINDOW]; /**< ACC Y 滑动窗口 */
+static float   az_buf[BSP_ACC_VAR_WINDOW]; /**< ACC Z 滑动窗口 */
+static int     var_buf_idx;                /**< 窗口循环索引 */
+static int     var_samples;                /**< 已采帧数 */
+static float   alpha;                      /**< 当前互补滤波 α */
+static float   last_variance;              /**< 上一帧方差 (调试用) */
 
 /* ---- Production API cache ---- */
-static bsp_lsm6dsr_data_t last_data;
-static int     is_stationary;
+static bsp_lsm6dsr_data_t last_data; /**< 最新数据缓存 */
+static int     is_stationary;         /**< 最新静止状态 */
 
-/* ---- sliding-window accel variance (robust stationary detection) ---- */
+/**
+ * @brief  计算 ACC 3 轴方差总和
+ * @return 方差总和 (mg²)，窗口未填满时返回 0
+ * @details 滑动窗口方差:
+ *          1. 计算窗口内 X/Y/Z 均值
+ *          2. 计算每轴方差
+ *          3. 返回三轴方差之和
+ *          方差小 (< BSP_ACC_VAR_THRESHOLD) → 静止
+ */
 static float compute_acc_variance(void)
 {
     if (var_samples < BSP_ACC_VAR_WINDOW) return 0.0f;
@@ -60,6 +83,20 @@ static float compute_acc_variance(void)
 }
 
 /* ------------------------------------------------------------------ */
+/**
+ * @brief  传感器初始化
+ * @details 完整初始化序列:
+ *          1. SW_RESET → 等待 100ms
+ *          2. WHO_AM_I 验证 (printf debug)
+ *          3. I3C 禁用 → IF_INC 使能 → BDU 使能
+ *          4. ACC 104Hz / ±4G
+ *          5. GYRO 104Hz / ±250dps → 稳定等待
+ *          6. 读取初始 ACC 计算初始 pitch/roll
+ *          7. 填充方差窗口 (初始值)
+ *          8. DWT 周期计数器使能 → 清零
+ *          9. 调用 bsp_lsm6dsr_calibrate()
+ *          10. 打印完成信息
+ */
 void bsp_lsm6dsr_init(void)
 {
     /* Full reset + wait */
@@ -126,6 +163,16 @@ void bsp_lsm6dsr_init(void)
 }
  
 /* ------------------------------------------------------------------ */
+/**
+ * @brief  陀螺零偏校准
+ * @details 采集 BSP_CALIB_SAMPLES 帧陀螺数据，每帧用 ACC 双重检测：
+ *          - 幅值检测: |mag² - 1G| < BSP_CALIB_ACC_MAG_TOL
+ *          - 帧间差分: |ax - ax_prev| < BSP_CALIB_ACC_DELTA_MAX 等
+ *          有效帧 ≥ 50% 时才采用均值偏置，否则偏置归零。
+ *          校准完成后读取一帧打印残差。
+ *
+ * @note 可在运行时重复调用（机器狗站定时重新校准）。
+ */
 void bsp_lsm6dsr_calibrate(void)
 {
     bgx = 0.0f; bgy = 0.0f; bgz = 0.0f;
@@ -191,6 +238,39 @@ void bsp_lsm6dsr_calibrate(void)
 }
 
 /* ------------------------------------------------------------------ */
+/**
+ * @brief  姿态更新 (核心滤波)
+ * @param  data 输出数据结构体指针 (不能为 NULL)
+ *
+ * @details 每帧依次执行:
+ *
+ *  **1. 计时**: DWT->CYCCNT 差值 / SystemCoreClock → dt (秒)
+ *     首帧或长时间暂停 (>0.5s) 时 dt 强制为 0.01s。
+ *
+ *  **2. 传感器读取**: ACC (g), GYRO (dps), TEMP (°C)
+ *
+ *  **3. 方差滑动窗口**: 更新 ACC 缓冲，满窗口时计算三轴方差总和。
+ *
+ *  **4. 三重静止检测**:
+ *     - 方差 < BSP_ACC_VAR_THRESHOLD (抗振动)
+ *     - |mag² - 1G| < BSP_CALIB_ACC_MAG_TOL (排除线加速度)
+ *     - 偏置补偿后 |gyro| > BSP_GYRO_MOTION_THRESHOLD → 强制运动 (防偏置吃掉旋转)
+ *
+ *  **5. 偏置校正与跟踪**:
+ *     - 校准有效时 fg -= bg
+ *     - 静止时 bg += rate × fg (X/Y 用 0.05, Z 用 0.005)
+ *
+ *  **6. 自适应 α 平滑**:
+ *     - 目标 α = 静止 ? BSP_ALPHA_STATIONARY : BSP_ALPHA_MOVING
+ *     - 每帧向目标靠近 BSP_ALPHA_SMOOTH_STEP
+ *
+ *  **7. 互补滤波器**:
+ *     - pitch = α × (pitch + gyro_pitch × dt) + (1-α) × acc_pitch
+ *     - roll  = α × (roll  - gyro_roll  × dt) + (1-α) × acc_roll
+ *     - yaw  += gz × dt  (纯 GYRO 积分，无 ACC 参考)
+ *
+ *  **8. 结果填充**: data→ax/ay/az 为 m/s²; gx/gy/gz 为偏置补偿后 dps
+ */
 void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
 {
     if (!initialized) return;
@@ -278,6 +358,12 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
 }
 
 /* ------------------------------------------------------------------ */
+/**
+ * @brief  获取陀螺零偏
+ * @param[out] bx X 轴偏置 (dps)，允许 NULL
+ * @param[out] by Y 轴偏置 (dps)，允许 NULL
+ * @param[out] bz Z 轴偏置 (dps)，允许 NULL
+ */
 void bsp_lsm6dsr_get_bias(float *bx, float *by, float *bz)
 {
     if (bx) *bx = bgx;
@@ -285,23 +371,51 @@ void bsp_lsm6dsr_get_bias(float *bx, float *by, float *bz)
     if (bz) *bz = bgz;
 }
 
+/**
+ * @brief  获取上一帧 ACC 方差总和
+ * @return 方差总和 (mg²)
+ */
 float bsp_lsm6dsr_get_last_variance(void)
 {
     return last_variance;
 }
 
 /* ------------------------------------------------------------------ */
+/**
+ * @brief  获取最新缓存数据 (只读)
+ * @return 指向内部 last_data 的 const 指针
+ * @note   返回的指针在下次 update 调用前有效
+ */
 const bsp_lsm6dsr_data_t* bsp_lsm6dsr_get_data(void)
 {
     return &last_data;
 }
 
+/**
+ * @brief  查询静止状态
+ * @return 1=静止 / 0=运动
+ */
 int bsp_lsm6dsr_is_stationary(void)
 {
     return is_stationary;
 }
 
 /* ------------------------------------------------------------------ */
+/**
+ * @brief  VOFA+ FireWater 10 通道格式化
+ * @param[out] buf     输出缓冲区
+ * @param[in]  buf_size 缓冲区大小
+ * @param[in]  data     IMU 数据指针
+ * @return 写入缓冲区的字符数
+ *
+ * @details 格式: "ax,ay,az,gx,gy,gz,pitch,roll,yaw,temp\\r\\n"
+ *          - ax/ay/az: m/s² (%.3f)
+ *          - gx/gy/gz: dps (%.3f)
+ *          - pitch/roll/yaw: deg (%.2f)
+ *          - temp: °C (%.1f)
+ *
+ *          VOFA+ 选择 FireWater 协议，10 通道自动对应。
+ */
 int bsp_lsm6dsr_vofa_format(char *buf, int buf_size, const bsp_lsm6dsr_data_t *data)
 {
     return snprintf(buf, buf_size,
