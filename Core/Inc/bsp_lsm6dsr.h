@@ -47,7 +47,10 @@
 #define BSP_ALPHA_SMOOTH_STEP         0.15f    /* α每帧最大变化 */
 #endif
 #ifndef BSP_BIAS_STATIONARY_RATE
-#define BSP_BIAS_STATIONARY_RATE      0.05f    /* 静止偏置跟踪速率 */
+#define BSP_BIAS_STATIONARY_RATE      0.05f    /* 静止偏置跟踪速率 (X/Y) */
+#endif
+#ifndef BSP_BIAS_STATIONARY_RATE_Z
+#define BSP_BIAS_STATIONARY_RATE_Z    0.005f   /* Z轴静止偏置跟踪速率(慢速，防不对称) */
 #endif
 #ifndef BSP_GYRO_MOTION_THRESHOLD
 #define BSP_GYRO_MOTION_THRESHOLD     5.0f     /* dps — 超过此值判定为运动 */

@@ -16,7 +16,7 @@ extern lsm6dsr_io_t lsm6dsr_io;
 static float   bgx, bgy, bgz;          /* gyro bias (dps) */
 static int     cal_ok;                  /* calibration success flag */
 static double  pitch, roll, yaw;        /* filter state (deg) */
-static uint32_t last_tick;              /* last HAL_GetTick() */
+static uint32_t last_tick;              /* last DWT CYCCNT (6ns resolution) */
 static int     initialized;             /* guard for update before init */
 
 /* ---- Adaptive filter state ---- */
@@ -109,7 +109,11 @@ void bsp_lsm6dsr_init(void)
     printf("  Initial pitch=%.2f  roll=%.2f\r\n",
            (double)pitch, (double)roll);
 
-    last_tick = HAL_GetTick();
+    /* switch to DWT cycle counter for sub-us dt precision */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    last_tick = DWT->CYCCNT;
     memset(&last_data, 0, sizeof(last_data));
     is_stationary = 1;
     initialized = 1;
@@ -191,9 +195,9 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
 {
     if (!initialized) return;
 
-    /* ---- timing ---- */
-    uint32_t now = HAL_GetTick();
-    double dt = (now > last_tick) ? (now - last_tick) * 0.001 : 0.01;
+    /* ---- timing (DWT cycle counter, ~6ns resolution) ---- */
+    uint32_t now = DWT->CYCCNT;
+    double dt = (now - last_tick) / (double)SystemCoreClock;
     if (dt > 0.5) dt = 0.01;
     last_tick = now;
 
@@ -235,7 +239,7 @@ void bsp_lsm6dsr_update(bsp_lsm6dsr_data_t *data)
         if (stationary) {
             bgx += BSP_BIAS_STATIONARY_RATE * fgx;
             bgy += BSP_BIAS_STATIONARY_RATE * fgy;
-            bgz += BSP_BIAS_STATIONARY_RATE * fgz;
+            bgz += BSP_BIAS_STATIONARY_RATE_Z * fgz;
         }
     }
 
