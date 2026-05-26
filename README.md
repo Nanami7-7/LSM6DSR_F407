@@ -202,6 +202,20 @@ STM32F407VET6 + LSM6DSR (I2C) IMU 姿态估计工程，面向机器狗 (robot do
 | `BSP_BIAS_STATIONARY_RATE_Z` | 0.005 | Z 轴静止偏置跟踪速率 (慢10倍，防A→B→A误差) |
 | `BSP_GYRO_MOTION_THRESHOLD` | 5.0 | 陀螺幅值运动阈值 (dps) |
 
+## 调参指南
+
+详细参数说明与调试方法见 [`docs/bsp_tuning_guide.md`](docs/bsp_tuning_guide.md)，涵盖：
+
+- 方差滑动窗口原理与阈值调节
+- 自适应 α 的物理意义与平滑过渡
+- 偏置跟踪速率（X/Y 与 Z 轴独立）
+- 陀螺运动阈值选择与三重静止检测
+- A→B→A 往返精度测试方法
+- VOFA+ 波形设置建议
+- 参数速查表（推荐范围与调节方向）
+
+首次用户请按 **调参流程 → 首次调参流程** 操作。
+
 ## 引脚映射
 
 | 引脚 | 功能 |

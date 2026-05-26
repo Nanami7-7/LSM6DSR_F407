@@ -64,7 +64,7 @@
 #define BSP_BIAS_STATIONARY_RATE      0.05f    /**< X/Y 轴静止偏置跟踪速率 */
 #endif
 #ifndef BSP_BIAS_STATIONARY_RATE_Z
-#define BSP_BIAS_STATIONARY_RATE_Z    0.005f   /**< Z 轴静止偏置跟踪速率 (慢10倍，防A→B→A误差) */
+#define BSP_BIAS_STATIONARY_RATE_Z    0.05f    /**< Z 轴静止偏置跟踪速率 (与 X/Y 一致，快速收敛) */
 #endif
 #ifndef BSP_GYRO_MOTION_THRESHOLD
 #define BSP_GYRO_MOTION_THRESHOLD     5.0f     /**< 陀螺幅值运动阈值 (dps)，超过则强制判为运动 */

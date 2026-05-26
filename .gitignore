@@ -24,3 +24,5 @@ MDK-ARM/*.uvguix*
 
 # Datasheets
 *.pdf
+
+docs/debug_history.md
